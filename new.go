@@ -2,7 +2,6 @@ package gcimporter
 
 import (
 	"go/build"
-	goimp "go/importer"
 	"go/types"
 	"log"
 )
@@ -11,17 +10,24 @@ import (
 type Importer struct {
 	ctx      *build.Context
 	packages map[string]*types.Package
-	lookup   goimp.Lookup
+	alias    *AliasMap
 }
 
 // New makes a new Importer using the given build context.
 // It implements go/types.Importer
-func New(ctx *build.Context, lookup goimp.Lookup) *Importer {
+func New(ctx *build.Context, alias *AliasMap) *Importer {
 	return &Importer{
 		ctx:      ctx,
 		packages: make(map[string]*types.Package),
-		lookup:   lookup,
+		alias:    alias,
 	}
+}
+
+func (imp *Importer) mapPath(path string) string {
+	if imp.alias != nil {
+		return imp.alias.Map(path)
+	}
+	return path
 }
 
 // Import imports a given package of the path.
@@ -41,9 +47,10 @@ func (imp *Importer) ImportFrom(path, srcDir string, mode types.ImportMode) (
 	if mode != 0 {
 		panic("mode must be 0")
 	}
-	p, err := importContext(imp.ctx, imp.packages, path, srcDir, imp.lookup)
+	mapped := imp.mapPath(path)
+	p, err := importContext(imp.ctx, imp.packages, mapped, srcDir)
 	if err != nil {
-		log.Printf("importFrom %q, %q: %s", path, srcDir, err)
+		log.Printf("importFrom %q(%q), %q: %s", path, mapped, srcDir, err)
 	}
 	return p, err
 }

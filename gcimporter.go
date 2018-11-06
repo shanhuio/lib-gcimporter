@@ -11,7 +11,6 @@ import (
 	"go/build"
 	"go/token"
 	"go/types"
-	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -23,16 +22,6 @@ const debug = false
 
 var pkgExts = [...]string{".a", ".o"}
 
-// FindPkg returns the filename and unique package id for an import
-// path based on package information provided by build.Import (using
-// the build.Default build.Context). A relative srcDir is interpreted
-// relative to the current working directory.
-// If no file was found, an empty filename is returned.
-//
-func FindPkg(path, srcDir string) (filename, id string) {
-	return findPkgContext(&build.Default, path, srcDir)
-}
-
 func findPkgContext(
 	ctx *build.Context, path, srcDir string,
 ) (filename, id string) {
@@ -40,40 +29,22 @@ func findPkgContext(
 		return
 	}
 
-	var noext string
-	switch {
-	default:
-		// "x" -> "$GOPATH/pkg/$GOOS_$GOARCH/x.ext", "x"
-		// Don't require the source files to be present.
-		if abs, err := filepath.Abs(srcDir); err == nil { // see issue 14282
-			srcDir = abs
-		}
-		bp, _ := ctx.Import(path, srcDir, build.FindOnly|build.AllowBinary)
-		if bp.PkgObj == "" {
-			id = path // make sure we have an id to print in error message
-			return
-		}
-		noext = strings.TrimSuffix(bp.PkgObj, ".a")
-		id = bp.ImportPath
-
-	case build.IsLocalImport(path):
-		// "./x" -> "/this/directory/x.ext", "/this/directory/x"
-		noext = filepath.Join(srcDir, path)
-		id = noext
-
-	case filepath.IsAbs(path):
-		// for completeness only - go/build.Import
-		// does not support absolute imports
-		// "/x" -> "/x.ext", "/x"
-		noext = path
-		id = path
+	if build.IsLocalImport(path) || filepath.IsAbs(path) {
+		return
 	}
 
-	if false { // for debugging
-		if path != id {
-			fmt.Printf("%s -> %s\n", path, id)
-		}
+	// "x" -> "$GOPATH/pkg/$GOOS_$GOARCH/x.ext", "x"
+	// Don't require the source files to be present.
+	if abs, err := filepath.Abs(srcDir); err == nil { // see issue 14282
+		srcDir = abs
 	}
+	bp, _ := ctx.Import(path, srcDir, build.FindOnly|build.AllowBinary)
+	if bp.PkgObj == "" {
+		id = path // make sure we have an id to print in error message
+		return
+	}
+	noext := strings.TrimSuffix(bp.PkgObj, ".a")
+	id = bp.ImportPath
 
 	// try extensions
 	for _, ext := range pkgExts {
@@ -93,67 +64,42 @@ func findPkgContext(
 //
 func Import(
 	packages map[string]*types.Package, path, srcDir string,
-	lookup func(path string) (io.ReadCloser, error),
 ) (pkg *types.Package, err error) {
-	return importContext(&build.Default, packages, path, srcDir, lookup)
+	return importContext(&build.Default, packages, path, srcDir)
 }
 
 func importContext(
 	ctx *build.Context,
 	packages map[string]*types.Package, path, srcDir string,
-	lookup func(path string) (io.ReadCloser, error),
 ) (pkg *types.Package, err error) {
-	var rc io.ReadCloser
-	var id string
-	if lookup != nil {
-		// With custom lookup specified, assume that caller has
-		// converted path to a canonical import path for use in the map.
+	filename, id := findPkgContext(ctx, path, srcDir)
+	if filename == "" {
 		if path == "unsafe" {
 			return types.Unsafe, nil
 		}
-		id = path
-
-		// No need to re-import if the package was imported completely before.
-		if pkg = packages[id]; pkg != nil && pkg.Complete() {
-			return
-		}
-		f, err := lookup(path)
-		if err != nil {
-			return nil, err
-		}
-		rc = f
-	} else {
-		var filename string
-		filename, id = findPkgContext(ctx, path, srcDir)
-		if filename == "" {
-			if path == "unsafe" {
-				return types.Unsafe, nil
-			}
-			return nil, fmt.Errorf("can't find import: %q", id)
-		}
-
-		// no need to re-import if the package was imported completely before
-		if pkg = packages[id]; pkg != nil && pkg.Complete() {
-			return
-		}
-
-		// open file
-		f, err := os.Open(filename)
-		if err != nil {
-			return nil, err
-		}
-		defer func() {
-			if err != nil {
-				// add file name to error
-				err = fmt.Errorf("%s: %v", filename, err)
-			}
-		}()
-		rc = f
+		return nil, fmt.Errorf("can't find import: %q", id)
 	}
-	defer rc.Close()
+
+	// no need to re-import if the package was imported completely before
+	if pkg = packages[id]; pkg != nil && pkg.Complete() {
+		return
+	}
+
+	// open file
+	f, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			// add file name to error
+			err = fmt.Errorf("%s: %v", filename, err)
+		}
+	}()
+	defer f.Close()
 
 	var hdr string
-	buf := bufio.NewReader(rc)
+	buf := bufio.NewReader(f)
 	if hdr, err = FindExportData(buf); err != nil {
 		return
 	}
