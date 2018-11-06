@@ -164,6 +164,10 @@ func BImportData(fset *token.FileSet, imports map[string]*types.Package, data []
 	return p.read, pkg, nil
 }
 
+func errorf(format string, args ...interface{}) {
+	panic(fmt.Sprintf(format, args...))
+}
+
 func (p *importer) pkg() *types.Package {
 	// if the package was seen before, i is its index (>= 0)
 	i := p.tagOrIndex()
