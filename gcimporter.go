@@ -3,7 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // Package gcimporter implements Import for gc-generated object files.
-package gcimporter
+package gcimporter // import "shanhu.io/gcimporter"
 
 import (
 	"bufio"
@@ -11,6 +11,7 @@ import (
 	"go/build"
 	"go/token"
 	"go/types"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -22,29 +23,51 @@ const debug = false
 
 var pkgExts = [...]string{".a", ".o"}
 
-func findPkgContext(
-	ctx *build.Context, path, srcDir string,
-) (filename, id string) {
+// findPkg returns the filename and unique package id for an import
+// path based on package information provided by build.Import (using
+// the build.Default build.Context). A relative srcDir is interpreted
+// relative to the current working directory.
+// If no file was found, an empty filename is returned.
+//
+func findPkg(ctx *build.Context, path, srcDir string) (filename, id string) {
 	if path == "" {
 		return
 	}
 
-	if build.IsLocalImport(path) || filepath.IsAbs(path) {
-		return
+	var noext string
+	switch {
+	default:
+		// "x" -> "$GOPATH/pkg/$GOOS_$GOARCH/x.ext", "x"
+		// Don't require the source files to be present.
+		if abs, err := filepath.Abs(srcDir); err == nil { // see issue 14282
+			srcDir = abs
+		}
+		bp, _ := ctx.Import(path, srcDir, build.FindOnly|build.AllowBinary)
+		if bp.PkgObj == "" {
+			id = path // make sure we have an id to print in error message
+			return
+		}
+		noext = strings.TrimSuffix(bp.PkgObj, ".a")
+		id = bp.ImportPath
+
+	case build.IsLocalImport(path):
+		// "./x" -> "/this/directory/x.ext", "/this/directory/x"
+		noext = filepath.Join(srcDir, path)
+		id = noext
+
+	case filepath.IsAbs(path):
+		// for completeness only - go/build.Import
+		// does not support absolute imports
+		// "/x" -> "/x.ext", "/x"
+		noext = path
+		id = path
 	}
 
-	// "x" -> "$GOPATH/pkg/$GOOS_$GOARCH/x.ext", "x"
-	// Don't require the source files to be present.
-	if abs, err := filepath.Abs(srcDir); err == nil { // see issue 14282
-		srcDir = abs
+	if false { // for debugging
+		if path != id {
+			fmt.Printf("%s -> %s\n", path, id)
+		}
 	}
-	bp, _ := ctx.Import(path, srcDir, build.FindOnly|build.AllowBinary)
-	if bp.PkgObj == "" {
-		id = path // make sure we have an id to print in error message
-		return
-	}
-	noext := strings.TrimSuffix(bp.PkgObj, ".a")
-	id = bp.ImportPath
 
 	// try extensions
 	for _, ext := range pkgExts {
@@ -62,44 +85,62 @@ func findPkgContext(
 // the corresponding package object to the packages map, and returns the object.
 // The packages map must contain all packages already imported.
 //
-func Import(
-	packages map[string]*types.Package, path, srcDir string,
-) (pkg *types.Package, err error) {
-	return importContext(&build.Default, packages, path, srcDir)
+func Import(fset *token.FileSet, packages map[string]*types.Package, path, srcDir string, lookup func(path string) (io.ReadCloser, error)) (pkg *types.Package, err error) {
+	return importContext(&build.Default, fset, packages, path, srcDir, lookup)
 }
 
-func importContext(
-	ctx *build.Context,
-	packages map[string]*types.Package, path, srcDir string,
-) (pkg *types.Package, err error) {
-	filename, id := findPkgContext(ctx, path, srcDir)
-	if filename == "" {
+func importContext(ctx *build.Context, fset *token.FileSet, packages map[string]*types.Package, path, srcDir string, lookup func(path string) (io.ReadCloser, error)) (pkg *types.Package, err error) {
+	var rc io.ReadCloser
+	var id string
+	if lookup != nil {
+		// With custom lookup specified, assume that caller has
+		// converted path to a canonical import path for use in the map.
 		if path == "unsafe" {
 			return types.Unsafe, nil
 		}
-		return nil, fmt.Errorf("can't find import: %q", id)
-	}
+		id = path
 
-	// no need to re-import if the package was imported completely before
-	if pkg = packages[id]; pkg != nil && pkg.Complete() {
-		return
-	}
-
-	// open file
-	f, err := os.Open(filename)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil {
-			// add file name to error
-			err = fmt.Errorf("%s: %v", filename, err)
+		// No need to re-import if the package was imported completely before.
+		if pkg = packages[id]; pkg != nil && pkg.Complete() {
+			return
 		}
-	}()
-	defer f.Close()
+		f, err := lookup(path)
+		if err != nil {
+			return nil, err
+		}
+		rc = f
+	} else {
+		var filename string
+		filename, id = findPkg(ctx, path, srcDir)
+		if filename == "" {
+			if path == "unsafe" {
+				return types.Unsafe, nil
+			}
+			return nil, fmt.Errorf("can't find import: %q", id)
+		}
+
+		// no need to re-import if the package was imported completely before
+		if pkg = packages[id]; pkg != nil && pkg.Complete() {
+			return
+		}
+
+		// open file
+		f, err := os.Open(filename)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if err != nil {
+				// add file name to error
+				err = fmt.Errorf("%s: %v", filename, err)
+			}
+		}()
+		rc = f
+	}
+	defer rc.Close()
 
 	var hdr string
-	buf := bufio.NewReader(f)
+	buf := bufio.NewReader(rc)
 	if hdr, err = FindExportData(buf); err != nil {
 		return
 	}
@@ -114,10 +155,6 @@ func importContext(
 		if err != nil {
 			break
 		}
-
-		// TODO(gri): allow clients of go/importer to provide a FileSet.
-		// Or, define a new standard go/types/gcexportdata package.
-		fset := token.NewFileSet()
 
 		// The indexed export format starts with an 'i'; the older
 		// binary export format starts with a 'c', 'd', or 'v'

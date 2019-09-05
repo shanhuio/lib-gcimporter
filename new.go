@@ -2,6 +2,7 @@ package gcimporter
 
 import (
 	"go/build"
+	"go/token"
 	"go/types"
 	"log"
 )
@@ -48,7 +49,8 @@ func (imp *Importer) ImportFrom(path, srcDir string, mode types.ImportMode) (
 		panic("mode must be 0")
 	}
 	mapped := imp.mapPath(path)
-	p, err := importContext(imp.ctx, imp.packages, mapped, srcDir)
+	fset := token.NewFileSet()
+	p, err := importContext(imp.ctx, fset, imp.packages, mapped, srcDir, nil)
 	if err != nil {
 		log.Printf("importFrom %q(%q), %q: %s", path, mapped, srcDir, err)
 	}
