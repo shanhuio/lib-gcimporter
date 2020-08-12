@@ -81,14 +81,6 @@ func findPkg(ctx *build.Context, path, srcDir string) (filename, id string) {
 	return
 }
 
-// Import imports a gc-generated package given its import path and srcDir, adds
-// the corresponding package object to the packages map, and returns the object.
-// The packages map must contain all packages already imported.
-//
-func Import(fset *token.FileSet, packages map[string]*types.Package, path, srcDir string, lookup func(path string) (io.ReadCloser, error)) (pkg *types.Package, err error) {
-	return importContext(&build.Default, fset, packages, path, srcDir, lookup)
-}
-
 func importContext(ctx *build.Context, fset *token.FileSet, packages map[string]*types.Package, path, srcDir string, lookup func(path string) (io.ReadCloser, error)) (pkg *types.Package, err error) {
 	var rc io.ReadCloser
 	var id string
@@ -147,7 +139,7 @@ func importContext(ctx *build.Context, fset *token.FileSet, packages map[string]
 
 	switch hdr {
 	case "$$\n":
-		err = fmt.Errorf("import %q: old export format no longer supported (recompile library)", path)
+		err = fmt.Errorf("import %q: old textual export format no longer supported (recompile library)", path)
 
 	case "$$B\n":
 		var data []byte
@@ -162,21 +154,14 @@ func importContext(ctx *build.Context, fset *token.FileSet, packages map[string]
 		if len(data) > 0 && data[0] == 'i' {
 			_, pkg, err = iImportData(fset, packages, data[1:], id)
 		} else {
-			_, pkg, err = BImportData(fset, packages, data, id)
+			err = fmt.Errorf("import %q: old binary export format no longer supported (recompile library)", path)
 		}
 
 	default:
-		err = fmt.Errorf("unknown export data header: %q", hdr)
+		err = fmt.Errorf("import %q: unknown export data header: %q", path, hdr)
 	}
 
 	return
-}
-
-func deref(typ types.Type) types.Type {
-	if p, _ := typ.(*types.Pointer); p != nil {
-		return p.Elem()
-	}
-	return typ
 }
 
 type byPath []*types.Package
