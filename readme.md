@@ -2,7 +2,7 @@ Fork of golang's gcimporter for supporting build.Context.
 
 ## changes required
 
-- copy golang soruce files from `${GOROOT}/src/go/internal/gcimporter"
+- copy golang soruce files from `${GOROOT}/src/go/internal/gcimporter"`
 - rename `FindPkg` into `findPkg`
 - change add `ctx *build.Context` arg into `FindPkg` as first arg, and
   `ctx.Import`
