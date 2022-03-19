@@ -12,7 +12,6 @@ import (
 	"go/token"
 	"go/types"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +80,10 @@ func findPkg(ctx *build.Context, path, srcDir string) (filename, id string) {
 	return
 }
 
+// Import imports a gc-generated package given its import path and srcDir, adds
+// the corresponding package object to the packages map, and returns the object.
+// The packages map must contain all packages already imported.
+//
 func importContext(ctx *build.Context, fset *token.FileSet, packages map[string]*types.Package, path, srcDir string, lookup func(path string) (io.ReadCloser, error)) (pkg *types.Package, err error) {
 	var rc io.ReadCloser
 	var id string
@@ -142,17 +145,14 @@ func importContext(ctx *build.Context, fset *token.FileSet, packages map[string]
 		err = fmt.Errorf("import %q: old textual export format no longer supported (recompile library)", path)
 
 	case "$$B\n":
-		var data []byte
-		data, err = ioutil.ReadAll(buf)
-		if err != nil {
-			break
-		}
+		var exportFormat byte
+		exportFormat, err = buf.ReadByte()
 
 		// The indexed export format starts with an 'i'; the older
 		// binary export format starts with a 'c', 'd', or 'v'
 		// (from "version"). Select appropriate importer.
-		if len(data) > 0 && data[0] == 'i' {
-			_, pkg, err = iImportData(fset, packages, data[1:], id)
+		if err == nil && exportFormat == 'i' {
+			pkg, err = iImportData(fset, packages, buf, id)
 		} else {
 			err = fmt.Errorf("import %q: old binary export format no longer supported (recompile library)", path)
 		}
