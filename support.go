@@ -12,7 +12,7 @@ import (
 	"go/types"
 	"sync"
 
-	"shanhu.io/lab/gcimporter/pkgbits"
+	"shanhu.io/gcimporter/pkgbits"
 )
 
 func assert(b bool) {

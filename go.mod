@@ -1,3 +1,3 @@
-module shanhu.io/lab/gcimporter
+module shanhu.io/gcimporter
 
 go 1.19

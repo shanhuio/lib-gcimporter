@@ -10,7 +10,7 @@ import (
 	"go/token"
 	"go/types"
 
-	"shanhu.io/lab/gcimporter/pkgbits"
+	"shanhu.io/gcimporter/pkgbits"
 )
 
 // A pkgReader holds the shared state for reading a unified IR package

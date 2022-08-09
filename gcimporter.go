@@ -3,7 +3,7 @@
 // license that can be found in the LICENSE file.
 
 // Package gcimporter implements Import for gc-generated object files.
-package gcimporter // import "shanhu.io/lab/gcimporter"
+package gcimporter // import "shanhu.io/gcimporter"
 
 import (
 	"bufio"
@@ -16,7 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"shanhu.io/lab/gcimporter/pkgbits"
+	"shanhu.io/gcimporter/pkgbits"
 )
 
 // debugging/development support
