@@ -7,14 +7,17 @@ package gcimporter // import "shanhu.io/gcimporter"
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"go/build"
 	"go/token"
 	"go/types"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"shanhu.io/gcimporter/pkgbits"
 )
@@ -22,7 +25,48 @@ import (
 // debugging/development support
 const debug = false
 
-var pkgExts = [...]string{".a", ".o"}
+var exportMap sync.Map // package dir → func() (string, bool)
+
+// lookupGorootExport returns the location of the export data
+// (normally found in the build cache, but located in GOROOT/pkg
+// in prior Go releases) for the package located in pkgDir.
+//
+// (We use the package's directory instead of its import path
+// mainly to simplify handling of the packages in src/vendor
+// and cmd/vendor.)
+func lookupGorootExport(ctx *build.Context, pkgDir string) (string, bool) {
+	f, ok := exportMap.Load(pkgDir)
+	if !ok {
+		var (
+			listOnce   sync.Once
+			exportPath string
+		)
+		f, _ = exportMap.LoadOrStore(pkgDir, func() (string, bool) {
+			listOnce.Do(func() {
+				cmd := exec.Command("go", "list", "-export", "-f", "{{.Export}}", pkgDir)
+				cmd.Dir = ctx.GOROOT
+				var output []byte
+				output, err := cmd.Output()
+				if err != nil {
+					return
+				}
+
+				exports := strings.Split(string(bytes.TrimSpace(output)), "\n")
+				if len(exports) != 1 {
+					return
+				}
+
+				exportPath = exports[0]
+			})
+
+			return exportPath, exportPath != ""
+		})
+	}
+
+	return f.(func() (string, bool))()
+}
+
+var pkgExts = [...]string{".a", ".o"} // a file from the build cache will have no extension
 
 // findPkg returns the filename and unique package id for an import
 // path based on package information provided by build.Import (using
@@ -44,10 +88,17 @@ func findPkg(ctx *build.Context, path, srcDir string) (filename, id string) {
 		}
 		bp, _ := ctx.Import(path, srcDir, build.FindOnly|build.AllowBinary)
 		if bp.PkgObj == "" {
-			id = path // make sure we have an id to print in error message
-			return
+			var ok bool
+			if bp.Goroot && bp.Dir != "" {
+				filename, ok = lookupGorootExport(ctx, bp.Dir)
+			}
+			if !ok {
+				id = path // make sure we have an id to print in error message
+				return
+			}
+		} else {
+			noext = strings.TrimSuffix(bp.PkgObj, ".a")
 		}
-		noext = strings.TrimSuffix(bp.PkgObj, ".a")
 		id = bp.ImportPath
 
 	case build.IsLocalImport(path):
@@ -69,6 +120,11 @@ func findPkg(ctx *build.Context, path, srcDir string) (filename, id string) {
 		}
 	}
 
+	if filename != "" {
+		if f, err := os.Stat(filename); err == nil && !f.IsDir() {
+			return
+		}
+	}
 	// try extensions
 	for _, ext := range pkgExts {
 		filename = noext + ext
@@ -81,10 +137,9 @@ func findPkg(ctx *build.Context, path, srcDir string) (filename, id string) {
 	return
 }
 
-// importContext imports a gc-generated package given its import path and
-// srcDir, adds the corresponding package object to the packages map, and
-// returns the object.  The packages map must contain all packages already
-// imported.
+// importContext imports a gc-generated package given its import path and srcDir, adds
+// the corresponding package object to the packages map, and returns the object.
+// The packages map must contain all packages already imported.
 func importContext(ctx *build.Context, fset *token.FileSet, packages map[string]*types.Package, path, srcDir string, lookup func(path string) (io.ReadCloser, error)) (pkg *types.Package, err error) {
 	var rc io.ReadCloser
 	var id string
